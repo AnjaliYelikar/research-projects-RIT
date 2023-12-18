@@ -508,7 +508,7 @@ os.chdir(dirname_run)
 
 
 if not(opts.use_ini is None):
-    if opts.online is None and opts.use_coinc is None:
+    if not(opts.online) and opts.use_coinc is None:
         print( " coinc required for ini file operation at present ")
         sys.exit(1)
     # Load in event dictionary
