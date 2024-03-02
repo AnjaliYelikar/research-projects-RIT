@@ -92,6 +92,7 @@ def retrieve_event_from_coinc(fname_coinc):
     event_dict["m2"] = row.mass2
     event_dict["s1z"] = row.spin1z
     event_dict["s2z"] = row.spin2z
+    event_dict["eccentricity"] = row.alpha4
     event_dict["IFOs"] = list(set(ifo_list))
     max_snr_idx = snr_list.index(max(snr_list))
     event_dict['SNR'] = snr_list[max_snr_idx]
@@ -194,6 +195,7 @@ parser.add_argument("--cip-fit-method",type=str,default=None)
 parser.add_argument("--cip-internal-use-eta-in-sampler",action='store_true', help="Use 'eta' as a sampling parameter. Designed to make GMM sampling behave particularly nicely for objects which could be equal mass")
 parser.add_argument("--ile-jobs-per-worker",type=int,default=None,help="Default will be 20 per worker usually for moderate-speed approximants, and more for very fast configurations")
 parser.add_argument("--ile-no-gpu",action='store_true')
+parser.add_argument("--ile-xpu",action='store_true',help='Request ILE run on both GPU and CPU. Disables ile_force_gpu, if provided!')
 parser.add_argument("--ile-force-gpu",action='store_true')
 parser.add_argument("--fake-data-cache",type=str)
 parser.add_argument("--spin-magnitude-prior",default='default',type=str,help="options are default [uniform mag for precessing, zprior for aligned], volumetric, uniform_mag_prec, uniform_mag_aligned, zprior_aligned")
@@ -246,6 +248,7 @@ parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
 parser.add_argument("--manual-extra-test-args",default=None,type=str,help="Avenue to adjoin extra TEST arguments.  ")
+parser.add_argument("--manual-extra-cip-args",default=None,type=str,help="Avenue to adjoin extra CIP arguments.  Needed for external priors or likelihoods in CIP stage")
 parser.add_argument("--verbose",action='store_true')
 parser.add_argument("--use-downscale-early",action='store_true', help="If provided, the first block of iterations are performed with lnL-downscale-factor passed to CIP, such that rho*2/2 * lnL-downscale-factor ~ (15)**2/2, if rho_hint > 15 ")
 parser.add_argument("--use-gauss-early",action='store_true',help="If provided, use gaussian resampling in early iterations ('G'). Note this is a different CIP instance than using a quadratic likelihood!")
@@ -319,7 +322,8 @@ if opts.assume_nonprecessing or opts.approx == "IMRPhenomD":
 if opts.use_osg:
     opts.condor_nogrid_nonworker = True  # note we ALSO have to check this if we set use_osg in the ini file! Moved statement so flagged
 
-
+if opts.ile_xpu:
+    opts.ile_force_gpu = False
 
 if not(opts.ile_jobs_per_worker):
     opts.ile_jobs_per_worker=20
@@ -537,6 +541,7 @@ if not(opts.use_ini is None):
     print( "IFO list from ini ", ifo_list)
     P.fmin = fmin_fiducial
     P.fref = unsafe_config_get(config,['engine','fref'])
+    P.eccentricity = event_dict["eccentricity"]
     # Write 'target_params.xml.gz' file
     lalsimutils.ChooseWaveformParams_array_to_xml([P], "target_params")
 
@@ -592,7 +597,7 @@ if opts.internal_use_rescaled_transverse_spin_coordinates:
 if not(opts.internal_use_amr) and not(opts.manual_initial_grid):
     cmd+= " --propose-initial-grid "
 if opts.force_initial_grid_size:
-    cmd += " --force-initial-grid-size {} ".format(opts.force_initial_grid_size)
+    cmd += " --force-initial-grid-size {} ".format(int(opts.force_initial_grid_size))
 if opts.assume_matter:
         cmd += " --assume-matter "
         npts_it = 1000
@@ -747,6 +752,10 @@ if opts.fake_data_cache:
         cmd += " --manual-ifo-list {} ".format(short_list.replace(' ',''))
 print( cmd)
 os.system(cmd)
+# we MUST make helper_ile_args.txt
+if not(os.path.exists('helper_ile_args.txt')):
+    print(" FAILURE: helper call failed to generate required file helper_ile_args.txt")
+    sys.exit(1)
 #sys.exit(0)
 
 # Create distance maximum (since that is NOT always chosen by the helper, and makes BNS runs needlessly much more painful!)
@@ -1025,6 +1034,8 @@ for indx in np.arange(len(instructions_cip)):
         if not(opts.force_ecc_min is None):
             ecc_min = opts.force_ecc_min
             line += " --ecc-min {}  ".format(ecc_min)
+    if not(opts.manual_extra_cip_args is None):
+        line += " {} ".format(opts.manual_extra_cip_args)  # embed with space on each side, avoid collisions
     line += "\n"
     lines.append(line)
 
@@ -1267,6 +1278,8 @@ if opts.external_fetch_native_from:
     cmd += " --fetch-ext-grid-exe `which util_FetchExternalGrid.py`  --fetch-ext-grid-args `pwd`/fetch_args.txt "
 if not(opts.ile_no_gpu):
     cmd +=" --request-gpu-ILE "
+if opts.ile_xpu:
+    cmd += " --request-xpu-ILE "
 if opts.add_extrinsic:
     cmd += " --last-iteration-extrinsic --last-iteration-extrinsic-nsamples {} ".format(opts.n_output_samples)
     if opts.add_extrinsic_time_resampling:
@@ -1309,8 +1322,19 @@ if opts.archive_pesummary_label:
 # Horribly annoying XPHM/XO4a fix because ChooseFDWaveform called.  Seems to be UNIVERSAL for the approximant name, but only if precessing
 if opts.internal_mitigate_fd_J_frame == 'rotate' and (opts.approx == 'IMRPhenomXPHM' or 'XO4a' in opts.approx) and opts.assume_precessing:
     cmd += " --frame-rotation "
-if opts.internal_mitigate_fd_J_frame =="L_frame":
-    cmd +=" --calibration-reweighting-initial-extra-args='--internal-waveform-fd-L-frame' "
+#if opts.internal_mitigate_fd_J_frame =="L_frame" and not(opts.manual_extra_ile_args) and not(opts.use_gwsignal):
+#    cmd +=" --calibration-reweighting-initial-extra-args='--internal-waveform-fd-L-frame' "
+if opts.calibration_reweighting:
+    my_extra_string = ''
+    if opts.use_gwsignal:
+        my_extra_string = ' --use-gwsignal '
+    if opts.manual_extra_ile_args:
+         my_extra_string += ' ' + opts.manual_extra_ile_args + ' '
+    if (opts.internal_mitigate_fd_J_frame =="L_frame"):
+        my_extra_string += ' --internal-waveform-fd-L-frame '
+    cmd +=" --calibration-reweighting-initial-extra-args='  {}' ".format(my_extra_string)
+#if opts.internal_mitigate_fd_J_frame =="L_frame" and opts.use_gwsignal and not(opts.manual_extra_ile_args):
+#    cmd +=" --calibration-reweighting-initial-extra-args='--internal-waveform-fd-L-frame --use-gwsignal' "
 print(cmd)
 os.system(cmd)
 
