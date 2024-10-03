@@ -36,11 +36,13 @@ if dat[0,0] > 0:
     print( f0, df, n_to_add)
     dat_new = np.zeros( (len(dat)+n_to_add,2))
     dat_new[n_to_add:,0] = dat[:,0]
+#    print(len(dat_new[n_to_add:,0]))
     dat_new[n_to_add:,1] = dat[:,1]
     dat_new[0:n_to_add,0] = np.arange(n_to_add)*df
+#    print(len(dat_new[0:n_to_add,0]))
     dat_new[0:n_to_add,1] = dat[0,1]  # Fill it with a LARGE value
-    dat = dat_new 
-
+    dat = dat_new
+#    print(len(dat_new[:,0]))
 
 # dat_wrapper = Object()
 # dat_wrapper.epoch = 0
@@ -51,9 +53,15 @@ if dat[0,0] > 0:
 # dat_wrapper.name = opts.ifo
 
 # convert structure to appropriate 
+
 df = dat[1,0]-dat[0,0]
+#df = [dat[i+1,0]-dat[i,0] for i in range(len(dat))] 
 epoch = lal.LIGOTimeGPS(0.0)
-psd_s = lal.CreateREAL8FrequencySeries(name=opts.ifo, epoch=epoch, f0=dat[0,0], deltaF=df, sampleUnits="s", length=len(dat))
+psd_s = lal.CreateREAL8FrequencySeries(name=opts.ifo, epoch=epoch, f0=dat[0,0], deltaF=df, sampleUnits="s",length=len(dat))
+#psd_s = lal.CreateREAL8FrequencySeries(name=opts.ifo, epoch=epoch, f0=dat[0,0], deltaF=np.log10(df), sampleUnits="s",length=len(dat))
+        #length=np.uint64(np.ceil((dat[len(dat)-1,0])/df))) 
+#print(psd_s)
+#print(psd_s.data.length)
 psd_s.data.data=dat[:,1] # copy in data
 
 psd_dict = {opts.ifo: psd_s}
@@ -61,6 +69,7 @@ psd_dict = {opts.ifo: psd_s}
 xmldoc = lal.series.make_psd_xmldoc(psd_dict)
 # Manually set the name
 xmldoc.childNodes[0].attributes._attrs  = {"Name": "psd"}
+
 
 from ligo.lw import utils
 fname_out = opts.ifo+opts.prefix_out+"_fromascii_psd.xml.gz"
